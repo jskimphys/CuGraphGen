@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <string>
 #include <filesystem>
+#include <chrono>
 
 #include "SKGgenerator.h"
 
@@ -19,16 +20,16 @@ int main(int argc, char** argv) {
         std::cout << "No scale provided, using default value of 20" << std::endl;
     }
 
-    int edgefactor = 16;
+    int edgefactor = 10;
     it = std::find(args.begin(), args.end(), "-e");
     if (it != args.end()) {
         edgefactor = std::stoi(*(it + 1));
     }
     else{
-        std::cout << "No edgefactor provided, using default value of 16" << std::endl;
+        std::cout << "No edgefactor provided, using default value of 10" << std::endl;
     }
 
-    uint64_t workload_size_limit = 1LL << 28; // 256MB
+    uint64_t workload_size_limit = 1ULL << 28; // 256MB
     it = std::find(args.begin(), args.end(), "-w");
     if (it != args.end()) {
         workload_size_limit = std::stoi(*(it + 1));
@@ -70,6 +71,13 @@ int main(int argc, char** argv) {
 
     //generate graphs
     SKGgenerator generator(0.57, 0.19, 0.19, 0.05, scale, scale + edgefactor, seed, "out", workload_size_limit);
+    auto start = std::chrono::high_resolution_clock::now();
     generator.schedule();
-    generator.print_schedule();
+    auto end = std::chrono::high_resolution_clock::now();
+    std::cout << "Time to generate schedule: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms" << std::endl;
+    generator.print_workload_summary();
+    //generator.print_workload();
+
+
+    generator.generate();
 }
