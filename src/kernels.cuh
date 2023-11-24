@@ -1,12 +1,11 @@
 #pragma once
+#include <math.h>
+#include <vector>
 #include "SKGgenerator.h"
 
-uint64_t* cu_generate_edges(const schedule_entry& entry, uint16_t* randombits, double a, double b, double c, double d);
-void process_workload(schedule_entry &entry, void* mem_start, uint64_t mem_size, uint64_t entry_seed, double a, double b, double c, double d);
+void deliver_workloads(std::vector<schedule_entry> workloads, void* mem_start, double a, double b, double c, double d);
+void start_scheduler(uint64_t seed);
+void terminate_scheduler();
 
-class CUScheduler{
-public:
-    CUScheduler();
-    ~CUScheduler();
-    void CUScheduler::setup_cu_mem(uint64_t seed)
-}
+size_t get_randomarr_size();
+size_t get_edgearr_size();

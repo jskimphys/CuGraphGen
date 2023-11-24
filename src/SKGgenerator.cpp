@@ -102,58 +102,70 @@ void SKGgenerator::generate(){
         exit(0);
     }
 
-    struct file_mapping{
-        schedule_entry& entry;
-        uint64_t start_address;
-        uint64_t size;
-    };
+    start_scheduler(seed);
+    size_t random_arr_size = get_randomarr_size();
+    size_t edge_arr_size = get_edgearr_size();
+    cout << "random arr size: " << random_arr_size << endl;
+    cout << "edge arr size: " << edge_arr_size << endl;
+
     struct file_info{
         int file_id;
         uint64_t size;
-        vector<file_mapping> mappings;
+        vector<schedule_entry> mappings;
     };
     vector<file_info> file_infos;
+    
 
     //map workload entries to files
-    uint64_t infile_address = 0;
+    size_t infile_address = 0;
+    size_t needed_random_arr_size = 0;
     int file_id = 0;
     file_infos.push_back(file_info{file_id, 0});
     for(auto& entry : workloads){
         //cout << entry.num_edge*16 << endl;
         //cout << filesize_limit << endl;
-        if(infile_address + entry.num_edge * 16 > filesize_limit){
+        if(entry.t == schedule_entry::type::along_src_vid){
+            needed_random_arr_size += entry.num_edge * (2*entry.log_n - entry.log_prefixlen);
+        }else{
+            needed_random_arr_size += entry.num_edge * (entry.log_n - entry.log_prefixlen);
+        }
+        // cout << "needed random arr size: " << needed_random_arr_size << endl;
+
+        if(infile_address + entry.num_edge * 16 > edge_arr_size || needed_random_arr_size > random_arr_size ||){
+            if(needed_random_arr_size > random_arr_size){
+                cout << "random arr size not enough" << endl;
+            }
+            else{
+                cout << "edge arr size limit reached" << endl;
+            }
             file_infos[file_id].size = infile_address;
             infile_address = 0;
             file_id++;
             file_infos.push_back(file_info{file_id, 0});
+            needed_random_arr_size = 0;
         }
-        file_infos[file_id].mappings.push_back(file_mapping{entry, infile_address, entry.num_edge * 16});
+        file_infos[file_id].mappings.push_back(entry);
         infile_address += entry.num_edge * 16;
     }
     
     file_infos[file_id].size = infile_address;
 
     //get memory and start to process each workload
-    random_device rd;
-    mt19937_64 gen(rd());
-    gen.seed(seed);
 
     //print summary of mappings
     for(auto& file_info : file_infos){
-        cout << "file " << file_info.file_id << " size: " << file_info.size << endl;
-        for(auto& mapping : file_info.mappings){
-            cout << "    workload " << mapping.entry.src_vid_start << " " << mapping.entry.src_vid_end << " " << mapping.entry.dst_vid_start << " " << mapping.entry.dst_vid_end << " " << mapping.entry.num_edge << endl;
-        }
+        // for(auto& mapping : file_info.mappings){
+        //     cout << "    workload " << mapping.entry.src_vid_start << " " << mapping.entry.src_vid_end << " " << mapping.entry.dst_vid_start << " " << mapping.entry.dst_vid_end << " " << mapping.entry.num_edge << endl;
+        // }
     }
 
     for(auto& file_info : file_infos){
         char* mem = (char*)get_mmap_memory(dir + "/edgelist8B_" + to_string(file_info.file_id) + ".part", file_info.size);
-        for(auto& mapping : file_info.mappings){
-            uint64_t entry_seed = gen();
-            process_workload(mapping.entry, mem + mapping.start_address, mapping.size , entry_seed, a, b, c, d);
-        }
+            //void deliver_workloads(vector<schedule_entry> workloads, void* mem_start, double a, double b, double c, double d);
+        deliver_workloads(file_info.mappings, mem, a, b, c, d);
         free_mmap_memory(mem, file_info.size);
     }
+    terminate_scheduler();
     print_mmap_time();
 }
 

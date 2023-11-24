@@ -37,7 +37,6 @@ char* get_mmap_memory(string filepath,  uint64_t size){
     auto end = std::chrono::high_resolution_clock::now();
     open_time += std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
-    cout << "mmap size: " << size << endl;
     start = std::chrono::high_resolution_clock::now();
     char* mem = (char*)mmap(NULL, size, PROT_READ | PROT_WRITE , MAP_SHARED, fd, 0);
     if (mem == MAP_FAILED){

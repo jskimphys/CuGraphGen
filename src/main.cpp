@@ -29,13 +29,13 @@ int main(int argc, char** argv) {
         std::cout << "No edgefactor provided, using default value of 10" << std::endl;
     }
 
-    uint64_t workload_size_limit = 1ULL << 28; // 256MB
+    uint64_t workload_size_limit = 1ULL << 26; // 64MB
     it = std::find(args.begin(), args.end(), "-w");
     if (it != args.end()) {
         workload_size_limit = std::stoi(*(it + 1));
     }
     else{
-        std::cout << "No workload size limit provided, using default value of 256MB" << std::endl;
+        std::cout << "No workload size limit provided, using default value of 64MB" << std::endl;
     }
 
     int seed = 0;
