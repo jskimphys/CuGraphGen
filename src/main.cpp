@@ -80,4 +80,5 @@ int main(int argc, char** argv) {
 
 
     generator.generate();
+    std::cout << "successfully generated graphs" << std::endl;
 }

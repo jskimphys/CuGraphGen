@@ -40,10 +40,9 @@ __global__ void generate_randombits_dst(uint64_t prefix, uint16_t one_prob, uint
     if(tid >= num_edges) return;
 
     uint64_t rarr_idx = tid * num_bits;
-    uint64_t post_bits = 0;
     while(num_bits-- > 0) {
-        if(random_array[rarr_idx] < one_prob){
-            prefix = prefix | (1 << post_bits);
+        if(random_array[rarr_idx++] < one_prob){
+            prefix = prefix | (1 << num_bits);
         }
     }
     output_array[2*tid+1] = prefix;
@@ -56,10 +55,9 @@ __global__ void generate_randombits_src(uint64_t prefix, uint16_t one_prob, uint
     if(tid >= num_edges) return;
 
     uint64_t rarr_idx = tid * num_bits;
-    uint64_t post_bits = 0;
     while(num_bits-- > 0) {
-        if(random_array[rarr_idx] < one_prob){
-            prefix = prefix | (1 << post_bits);
+        if(random_array[rarr_idx++] < one_prob){
+            prefix = prefix | (1 << num_bits);
         }
     }
     output_array[2*tid] = prefix;
@@ -108,7 +106,7 @@ void CuScheduler::free_cu_mem(){
 }
 
 void CuScheduler::update_random_arr(size_t update_size){
-    curandGenerate(gen, random_arr, update_size / sizeof(uint32_t));
+    curandGenerate(gen, random_arr, random_arr_size / sizeof(uint32_t));
     if(cudaPeekAtLastError() != cudaSuccess){
         std::cerr << "Error in generating random bits" << std::endl;
         exit(1);
@@ -127,6 +125,10 @@ void CuScheduler::process_workloads(std::vector<schedule_entry> workloads, void*
         }
         total_edges += entry.num_edge;
     }
+    if(cudaPeekAtLastError() != cudaSuccess){
+        std::cerr << "somthing got wrong before generating random bits" << std::endl;
+        exit(1);
+    }
     update_random_arr(total_bits_needed >> 1 + 1);
 
     char** edge_ptrs = new char*[workloads.size()];
@@ -137,9 +139,10 @@ void CuScheduler::process_workloads(std::vector<schedule_entry> workloads, void*
         edge_ptrs[i] = edge_ptrs[i-1] + workloads[i-1].num_edge * 16;
         size_t randombits_needed = (workloads[i-1].t == schedule_entry::type::along_src_vid) ? workloads[i-1].num_edge * (workloads[i-1].log_n - workloads[i-1].log_prefixlen) : workloads[i-1].num_edge * (2*workloads[i-1].log_n - workloads[i-1].log_prefixlen);
         randombits_ptrs[i] = randombits_ptrs[i-1] + randombits_needed;
+        randombits_ptrs[i] = randombits_ptrs[i] + 16 - randombits_needed % 16;
     }
 
-    #pragma omp parallel for 
+    #pragma omp parallel for num_threads(workloads.size() / 64)
     for(int i = 0; i < workloads.size(); i++){
         schedule_entry& entry = workloads[i];
         if(entry.t == schedule_entry::type::along_dst_vid){
@@ -158,10 +161,17 @@ void CuScheduler::process_workloads(std::vector<schedule_entry> workloads, void*
             generate_randombits_src<<<gridSize, blockSize>>>(entry.src_vid_start, one_prob, entry.log_n - entry.log_prefixlen, (uint16_t*)randombits_ptrs[i], (uint64_t*)edge_ptrs[i], entry.num_edge);
 
             one_prob = (uint16_t) ((b+d) * (1 << 16));
-            int randombits_needed = entry.num_edge * (entry.log_n - entry.log_prefixlen);
-            generate_randombits_dst<<<gridSize, blockSize>>>(entry.dst_vid_start, one_prob, entry.log_n - entry.log_prefixlen, (uint16_t*)randombits_ptrs[i] + randombits_needed, (uint64_t*)edge_ptrs[i], entry.num_edge);
+            int randombits_needed = entry.num_edge * entry.log_n  + 16 - entry.num_edge * entry.log_n % 16;
+            generate_randombits_dst<<<gridSize, blockSize>>>(entry.dst_vid_start, one_prob, entry.log_n, (uint16_t*)randombits_ptrs[i] + randombits_needed, (uint64_t*)edge_ptrs[i], entry.num_edge);
         }
     }
+
+    if(cudaPeekAtLastError() != cudaSuccess){
+        std::cerr << "somthing got wrong before memcpy" << std::endl;
+        exit(1);
+    }
+
+    cudaDeviceSynchronize();
     CUdeviceptr cu_edge_ptr = CUdeviceptr(edge_arr);
     cuMemcpyDtoH(mem_start, cu_edge_ptr, total_edges * 16);
 }

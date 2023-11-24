@@ -2,6 +2,7 @@
 #include <random>
 #include <cassert>
 #include <bitset>
+#include <filesystem>
 
 #include "kernels.cuh"
 #include "SKGgenerator.h"
@@ -125,19 +126,19 @@ void SKGgenerator::generate(){
         //cout << entry.num_edge*16 << endl;
         //cout << filesize_limit << endl;
         if(entry.t == schedule_entry::type::along_src_vid){
-            needed_random_arr_size += entry.num_edge * (2*entry.log_n - entry.log_prefixlen);
+            needed_random_arr_size += entry.num_edge * (2*entry.log_n - entry.log_prefixlen) * 2;
         }else{
-            needed_random_arr_size += entry.num_edge * (entry.log_n - entry.log_prefixlen);
+            needed_random_arr_size += entry.num_edge * (entry.log_n - entry.log_prefixlen) * 2;
         }
         // cout << "needed random arr size: " << needed_random_arr_size << endl;
 
-        if(infile_address + entry.num_edge * 16 > edge_arr_size || needed_random_arr_size > random_arr_size ||){
-            if(needed_random_arr_size > random_arr_size){
-                cout << "random arr size not enough" << endl;
-            }
-            else{
-                cout << "edge arr size limit reached" << endl;
-            }
+        if(infile_address + entry.num_edge * 16 > edge_arr_size || needed_random_arr_size > random_arr_size){
+            // if(needed_random_arr_size > random_arr_size){
+            //     cout << "random arr size not enough" << endl;
+            // }
+            // else{
+            //     cout << "edge arr size limit reached" << endl;
+            // }
             file_infos[file_id].size = infile_address;
             infile_address = 0;
             file_id++;
