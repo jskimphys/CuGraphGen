@@ -3,60 +3,45 @@
 #include <math.h>
 #include <curand.h>
 #include <vector>
+#include <thread>
 
 #include "kernels.cuh"
 
+const int blockSize = 128;
+const int STREAM_PER_WORKER = 16;
 
-class CuScheduler{
-public:
-    CuScheduler(){
-        random_arr = nullptr;
-        edge_arr = nullptr;
-        random_arr_size = 0;
-        edge_arr_size = 0;
-    }
-    void setup_cu_mem(uint64_t seed);
-    void free_cu_mem();
-    void process_workloads(std::vector<schedule_entry> workloads, void* mem_start, double a, double b, double c, double d);
-    void update_random_arr(size_t update_size);
-    size_t get_randomarr_size(){
-        return random_arr_size;
-    }
-    size_t get_edgearr_size(){
-        return edge_arr_size;
-    }
-private:
-    size_t random_arr_size;
-    size_t edge_arr_size;
-    uint32_t* random_arr;
-    uint64_t* edge_arr;
-    curandGenerator_t gen;
-} cu_scheduler;
-
-__global__ void generate_randombits_dst(uint64_t prefix, uint16_t one_prob, uint64_t num_bits, uint16_t* random_array, uint64_t* output_array, uint64_t num_edges) {
+__global__ void generate_randombits_dst(uint64_t prefix, uint16_t bab, uint16_t dcd, int num_bits, uint16_t* random_array, uint64_t* output_array, uint64_t num_edges) {
     //inputs : after the bits in prefix, posterier bits are randomly generated
     //one_prob : probability of 1
     uint64_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if(tid >= num_edges) return;
 
     uint64_t rarr_idx = tid * num_bits;
-    while(num_bits-- > 0) {
-        if(random_array[rarr_idx++] < one_prob){
-            prefix = prefix | (1 << num_bits);
+    while(num_bits > 0) {
+        if(output_array[2*tid] & (1 << num_bits)){//if the corresponding src_vid bit is 1
+            if(random_array[rarr_idx++] < dcd){
+                prefix = prefix | (1 << num_bits);
+            }
         }
+        else{
+            if(random_array[rarr_idx++] < bab){
+                prefix = prefix | (1 << num_bits);
+            }
+        }
+        num_bits--;
     }
     output_array[2*tid+1] = prefix;
 }
 
-__global__ void generate_randombits_src(uint64_t prefix, uint16_t one_prob, uint64_t num_bits, uint16_t* random_array, uint64_t* output_array, uint64_t num_edges) {
+__global__ void generate_randombits_src(uint64_t prefix, uint16_t cdabcd, int num_bits, uint16_t* random_array, uint64_t* output_array, uint64_t num_edges) {
     //inputs : after the bits in prefix, posterier bits are randomly generated
-    //one_prob : probability of 1
+    //cdabcd : probability of 1
     uint64_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if(tid >= num_edges) return;
 
     uint64_t rarr_idx = tid * num_bits;
     while(num_bits-- > 0) {
-        if(random_array[rarr_idx++] < one_prob){
+        if(random_array[rarr_idx++] < cdabcd){
             prefix = prefix | (1 << num_bits);
         }
     }
@@ -67,131 +52,226 @@ __global__ void fillWithStride2(uint64_t* data, uint64_t value, int size) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (tid < size) {
-        // Calculate the offset with a stride of 2
-        int offset = tid * 2;
-        data[offset] = value;
+        data[tid * 2] = value;
     }
 }
 
-void CuScheduler::setup_cu_mem(uint64_t seed){
-    size_t freeBytes, totalBytes;
-    cudaMemGetInfo(&freeBytes, &totalBytes);
+CuWorker::CuWorker(uint64_t seed)
+    : hostMemIdx(0), writer()
+{
+    size_t free_mem_size, total_mem_size;
+    cudaMemGetInfo(&free_mem_size, &total_mem_size);
+    
+    //allocate memory for each worker
+    size_t mem_per_worker = (size_t) (free_mem_size * 0.85);
+    double rarr_earr_ratio = 4;
 
-    std::cout << "Free cuda memory: " << freeBytes / (1024 * 1024) << " MB" << std::endl;
-    std::cout << "Total cuda memory: " << totalBytes / (1024 * 1024) << " MB" << std::endl;
+    const int host_mem_num = 2;//this is for writing parallelism
+    earr_bytesize = mem_per_worker / (rarr_earr_ratio + 1);
+    rarr_bytesize = mem_per_worker - earr_bytesize;
 
-    size_t memory_to_use = (size_t) (freeBytes * 0.85);
-    //divide memory into random bits and edges
-    //edge_size = 16*n_edges
-    //random_bits_size = 2*random_bits_per_edge * n_edges ~ 2*40*n_edges
-    int rbits_edges_ratio = 5;
-    edge_arr_size = memory_to_use / (rbits_edges_ratio + 1);
-    random_arr_size = memory_to_use - edge_arr_size;
+    for(int i = 0; i < STREAM_PER_WORKER; i++){
+        cudaStream_t stream;
+        cudaStreamCreate(&stream);
+        streams.push_back(stream);
+    }
 
-    cudaMalloc((void**)&random_arr, random_arr_size);
-    cudaMalloc((void**)&edge_arr, edge_arr_size);
-    if(random_arr == nullptr || edge_arr == nullptr){
-        std::cerr << "Error in allocating memory for random bits or edges" << std::endl;
-        exit(1);
+    cudaMallocAsync((void**)&random_arr, rarr_bytesize + 8*1024, streams[0]);//extra 8KB for alignment(since wrongly aligned memory cause error)
+    cudaMallocAsync((void**)&edge_arr_device,  earr_bytesize + 8*1024, streams[1]);
+    
+    
+    edge_arr_host_list = std::vector<uint64_t*>(host_mem_num);
+    for(int i=0; i< host_mem_num; i++){
+        cudaMallocHost((void**)&(edge_arr_host_list[i]), earr_bytesize);
+        if(cudaPeekAtLastError() != cudaSuccess){
+            std::cerr << "Error in allocating memories" << std::endl;
+            std::cerr << cudaGetErrorString(cudaPeekAtLastError()) << "at " << i << "th host memory allocation" << std::endl;
+            exit(1);
+        }
     }
 
     curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
     curandSetPseudoRandomGeneratorSeed(gen, seed);
-}
 
-void CuScheduler::free_cu_mem(){
-    cudaFree(random_arr);
-    cudaFree(edge_arr);
-    curandDestroyGenerator(gen);
-}
 
-void CuScheduler::update_random_arr(size_t update_size){
-    curandGenerate(gen, random_arr, random_arr_size / sizeof(uint32_t));
     if(cudaPeekAtLastError() != cudaSuccess){
-        std::cerr << "Error in generating random bits" << std::endl;
+        std::cerr << "Error in allocating memories" << std::endl;
+        std::cerr << cudaGetErrorString(cudaPeekAtLastError()) << std::endl;
         exit(1);
     }
 }
 
-void CuScheduler::process_workloads(std::vector<schedule_entry> workloads, void* mem_start, double a, double b, double c, double d){
-    size_t total_bits_needed = 0;
+CuWorker::~CuWorker(){
+    for(int i=0; i< edge_arr_host_list.size(); i++){
+        cudaFreeHost(edge_arr_host_list[i]);
+    }
+    cudaFree(random_arr);
+    cudaFree(edge_arr_device);
+    curandDestroyGenerator(gen);
+    if(cudaPeekAtLastError() != cudaSuccess){
+        std::cerr << "Error in freeing memory or destroying rand generator" << std::endl;
+        std::cerr << cudaGetErrorString(cudaPeekAtLastError()) << std::endl;
+        exit(1);
+    }
+    for(int i = 0; i < STREAM_PER_WORKER; i++){
+        cudaStreamDestroy(streams[i]);
+    }
+}
+
+void CuWorker::update_random_arr(size_t num_32bits){
+    curandGenerate(gen, random_arr, num_32bits);
+    if(cudaPeekAtLastError() != cudaSuccess){
+        std::cerr << "Error in generating random bits" << std::endl;
+        std::cerr << cudaGetErrorString(cudaPeekAtLastError()) << std::endl;
+        exit(1);
+    }
+}
+
+void CuWorker::process_workloads(std::vector<schedule_entry> workloads, std::string filename, size_t filesize, double a, double b, double c, double d){
+
+    size_t total_rbits = 0;
     size_t total_edges = 0;
+    //caculate the total workload size
     for(auto entry : workloads){
         if(entry.t == schedule_entry::type::along_src_vid){
-            total_bits_needed += entry.num_edge * (entry.log_n - entry.log_prefixlen);
+            total_rbits += entry.num_edge * (2*entry.log_n - entry.log_prefixlen);
         }
         else{
-            total_bits_needed += entry.num_edge * (2*entry.log_n - entry.log_prefixlen);
+            total_rbits += entry.num_edge * (entry.log_n - entry.log_prefixlen);
         }
         total_edges += entry.num_edge;
     }
-    if(cudaPeekAtLastError() != cudaSuccess){
-        std::cerr << "somthing got wrong before generating random bits" << std::endl;
-        exit(1);
-    }
-    update_random_arr(total_bits_needed >> 1 + 1);
+    update_random_arr(total_rbits / 2);//require 2 bytes of random value to generate one random bit in edge
 
-    char** edge_ptrs = new char*[workloads.size()];
-    char** randombits_ptrs = new char*[workloads.size()];
-    edge_ptrs[0] = (char*)edge_arr;
-    randombits_ptrs[0] = (char*)random_arr;
+    // maps memory for each workload
+    uint64_t** edge_ptrs = new uint64_t*[workloads.size()];
+    uint16_t** randombits_ptrs = new uint16_t*[workloads.size()];
+    edge_ptrs[0] = (uint64_t*)edge_arr_device;
+    randombits_ptrs[0] = (uint16_t*)random_arr;
     for(int i = 1; i < workloads.size(); i++){
-        edge_ptrs[i] = edge_ptrs[i-1] + workloads[i-1].num_edge * 16;
-        size_t randombits_needed = (workloads[i-1].t == schedule_entry::type::along_src_vid) ? workloads[i-1].num_edge * (workloads[i-1].log_n - workloads[i-1].log_prefixlen) : workloads[i-1].num_edge * (2*workloads[i-1].log_n - workloads[i-1].log_prefixlen);
-        randombits_ptrs[i] = randombits_ptrs[i-1] + randombits_needed;
-        randombits_ptrs[i] = randombits_ptrs[i] + 16 - randombits_needed % 16;
+        edge_ptrs[i] = edge_ptrs[i-1] + workloads[i-1].num_edge * 2;
+        edge_ptrs[i] = edge_ptrs[i] + 16 - workloads[i-1].num_edge % 16;//align to 16 byest
+
+        size_t randombits_needed = 0;
+        if(workloads[i].t == schedule_entry::type::along_src_vid){
+            //need to generate random bits for src_vid
+            randombits_needed = workloads[i-1].num_edge * (workloads[i-1].log_n - workloads[i-1].log_prefixlen);
+            randombits_ptrs[i] = randombits_ptrs[i-1] + randombits_needed;
+            randombits_ptrs[i] = randombits_ptrs[i] + 16 - randombits_needed % 16;//align to 16 byest
+            
+            //need to generate random bits for dst_vid
+            randombits_needed = workloads[i-1].num_edge * workloads[i-1].log_n;
+            randombits_ptrs[i] = randombits_ptrs[i] + randombits_needed;
+            randombits_ptrs[i] = randombits_ptrs[i] + 16 - randombits_needed % 16;//align to 16 byest
+        }
+        else{
+            randombits_needed = workloads[i-1].num_edge * (workloads[i-1].log_n - workloads[i-1].log_prefixlen);
+            randombits_ptrs[i] = randombits_ptrs[i-1] + randombits_needed;
+            randombits_ptrs[i] = randombits_ptrs[i] + 16 - randombits_needed % 16;//align to 16 byest
+        }
     }
 
-    #pragma omp parallel for num_threads(workloads.size() / 64)
+    #pragma omp parallel for
     for(int i = 0; i < workloads.size(); i++){
+
         schedule_entry& entry = workloads[i];
         if(entry.t == schedule_entry::type::along_dst_vid){
             //fill the src_vid in the edgelist
-            int blockSize = 256;
             int gridSize = (entry.num_edge + blockSize - 1) / blockSize;
-            uint16_t one_prob = (uint16_t) ((b+d) * (1 << 16));//probability of 1 quantized to 16 bits
-            fillWithStride2<<<gridSize, blockSize>>>((uint64_t*)edge_ptrs[i], entry.src_vid_start, entry.num_edge);
+            uint16_t bab = (uint16_t) (b/(a+b) * (1 << 16));
+            uint16_t dcd = (uint16_t) (d/(c+d) * (1 << 16));
 
-            generate_randombits_dst<<<gridSize, blockSize>>>(entry.dst_vid_start, one_prob, entry.log_n - entry.log_prefixlen, (uint16_t*)randombits_ptrs[i], (uint64_t*)edge_ptrs[i], entry.num_edge);
+            fillWithStride2<<<gridSize, blockSize, 0, streams[i % streams.size()]>>>((uint64_t*)edge_ptrs[i], entry.src_vid_start, entry.num_edge);
+            generate_randombits_dst<<<gridSize, blockSize, 0, streams[i % streams.size()]>>>(entry.dst_vid_start, bab, dcd, entry.log_n - entry.log_prefixlen, randombits_ptrs[i], edge_ptrs[i], entry.num_edge);
         }
         else{
-            int blockSize = 256;
             int gridSize = (entry.num_edge + blockSize - 1) / blockSize;
-            uint16_t one_prob = (uint16_t) ((c+d) * (1 << 16));
-            generate_randombits_src<<<gridSize, blockSize>>>(entry.src_vid_start, one_prob, entry.log_n - entry.log_prefixlen, (uint16_t*)randombits_ptrs[i], (uint64_t*)edge_ptrs[i], entry.num_edge);
+            uint16_t cdabcd = (uint16_t) ((c+d) * (1 << 16));
+            generate_randombits_src<<<gridSize, blockSize, 0, streams[i % streams.size()]>>>(entry.src_vid_start, cdabcd, entry.log_n - entry.log_prefixlen, randombits_ptrs[i], edge_ptrs[i], entry.num_edge);
 
-            one_prob = (uint16_t) ((b+d) * (1 << 16));
-            int randombits_needed = entry.num_edge * entry.log_n  + 16 - entry.num_edge * entry.log_n % 16;
-            generate_randombits_dst<<<gridSize, blockSize>>>(entry.dst_vid_start, one_prob, entry.log_n, (uint16_t*)randombits_ptrs[i] + randombits_needed, (uint64_t*)edge_ptrs[i], entry.num_edge);
+            
+            uint16_t bab = (uint16_t) (b/(a+b) * (1 << 16));
+            uint16_t dcd = (uint16_t) (d/(c+d) * (1 << 16));
+            int randombits_used = entry.num_edge * (entry.log_n - entry.log_prefixlen);
+            randombits_used = randombits_used + 16 - randombits_used % 16;//align to 16 byest
+            generate_randombits_dst<<<gridSize, blockSize, 0, streams[i % streams.size()]>>>(entry.dst_vid_start, bab, dcd, entry.log_n, (uint16_t*)(randombits_ptrs[i] + randombits_used), (uint64_t*)edge_ptrs[i], entry.num_edge);
         }
     }
 
+
     if(cudaPeekAtLastError() != cudaSuccess){
-        std::cerr << "somthing got wrong before memcpy" << std::endl;
+        std::cerr << "Error processing workloads" << std::endl;
+        std::cerr << cudaGetErrorString(cudaPeekAtLastError()) << std::endl;
         exit(1);
     }
 
-    cudaDeviceSynchronize();
-    CUdeviceptr cu_edge_ptr = CUdeviceptr(edge_arr);
-    cuMemcpyDtoH(mem_start, cu_edge_ptr, total_edges * 16);
+    CUdeviceptr dvptr = CUdeviceptr(edge_arr_device);
+    cuMemcpyDtoH(edge_arr_host_list[hostMemIdx], dvptr, total_edges * 16);
+    writer.write_async(filename, (char*) edge_arr_host_list[hostMemIdx], total_edges * 16);
+    hostMemIdx = (hostMemIdx + 1) % edge_arr_host_list.size();
 }
 
+// CuScheduler::CuScheduler(int num_workers){
+//     //get cuda device properties
+//     size_t free_mem_size, total_mem_size;
+//     cudaMemGetInfo(&free_mem_size, &total_mem_size);
+    
+//     //allocate memory for each worker
+//     size_t mem_per_worker = (size_t) (free_mem_size * 0.85 / num_workers);
+//     double rarr_earr_ratio = 4;
 
-void deliver_workloads(std::vector<schedule_entry> workloads, void* mem_start, double a, double b, double c, double d){
-    cu_scheduler.process_workloads(workloads, mem_start, a, b, c, d);
-}
+//     earr_bytesize = mem_per_worker / (rarr_earr_ratio + 1);
+//     rarr_bytesize = mem_per_worker - earr_bytesize;
 
-void start_scheduler(uint64_t seed){
-    cu_scheduler.setup_cu_mem(seed);
-}
+//     this->num_workers = num_workers;
+//     workers = new CuWorker*[num_workers];
+//     for(int i = 0; i < num_workers; i++){
+//         worker_status.push_back(false);
+//         worker_threads.push_back(thread());
+//         workers[i] = new CuWorker(i, rarr_bytesize, earr_bytesize, NUM_WRITER);
+//     }
+// }
 
-void terminate_scheduler(){
-    cu_scheduler.free_cu_mem();
-}
+// CuScheduler::~CuScheduler(){
+//     //free memory for each worker
+//     for(int i = 0; i < num_workers; i++){
+//         worker_threads[i].join();
+//     }
+//     for(int i = 0; i < num_workers; i++){
+//         delete workers[i];
+//     }
+// }
 
-size_t get_randomarr_size(){
-    return cu_scheduler.get_randomarr_size();
-}
-size_t get_edgearr_size(){
-    return cu_scheduler.get_edgearr_size();
-}
+// void CuScheduler::deliver_workloads(std::vector<schedule_entry> workloads, std::string filename, size_t filesize, double a, double b, double c, double d){
+//     //divide workloads to each worker
+//     int idle_worker = -1;
+//     for(int i=0; i < num_workers; i++){
+//         if(worker_status[i] == false){
+//             idle_worker = i;
+//             break;
+//         }
+//     }
+//     if(idle_worker == -1){
+//         while(true){//spin wait for idle worker
+//             for(int i=0; i<num_workers; i++){
+//                 if(worker_threads[i].joinable()){
+//                     worker_threads[i].join();
+//                     worker_status[i] = false;
+//                     idle_worker = i;
+//                     break;
+//                 }
+//             }
+//             if(idle_worker != -1) break;
+//         }
+//     }
+
+//     worker_threads[idle_worker] = thread(&CuWorker::process_workloads, workers[idle_worker], workloads, filename, filesize, a, b, c, d);
+//     worker_status[idle_worker] = true;
+// }
+
+// size_t CuScheduler::get_randomarr_bytesize(){
+//     return rarr_bytesize;
+// }
+// size_t CuScheduler::get_edgearr_bytesize(){
+//     return earr_bytesize;
+// }

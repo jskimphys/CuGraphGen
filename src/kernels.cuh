@@ -1,11 +1,53 @@
 #pragma once
+
 #include <math.h>
 #include <vector>
-#include "SKGgenerator.h"
+#include <thread>
+#include <string>
+#include <curand.h>
+#include <cuda.h>
 
-void deliver_workloads(std::vector<schedule_entry> workloads, void* mem_start, double a, double b, double c, double d);
-void start_scheduler(uint64_t seed);
-void terminate_scheduler();
+#include "SKGgenerator.cuh"
+#include "fast_writer.h"
 
-size_t get_randomarr_size();
-size_t get_edgearr_size();
+class CuWorker{
+public:
+    CuWorker(uint64_t seed);
+    ~CuWorker();
+    
+    void process_workloads(std::vector<schedule_entry> workloads, std::string filename, size_t filesize, double a, double b, double c, double d);
+    void update_random_arr(size_t num_32bit);
+    size_t get_randomarr_bytesize(){
+        return rarr_bytesize;
+    }
+    size_t get_edgearr_bytesize(){
+        return earr_bytesize;
+    }
+private:
+    size_t rarr_bytesize;
+    size_t earr_bytesize;
+    uint32_t* random_arr;
+    uint64_t* edge_arr_device;
+    curandGenerator_t gen;
+    std::vector<cudaStream_t> streams;
+
+    int hostMemIdx;
+    std::vector<uint64_t*> edge_arr_host_list;
+    fast_writer writer;
+};
+
+// class CuScheduler{
+// public:
+//     CuScheduler(int num_workers);
+//     ~CuScheduler();
+//     void deliver_workloads(std::vector<schedule_entry> workloads, std::string filename, size_t filesize, double a, double b, double c, double d);
+//     size_t get_randomarr_bytesize();
+//     size_t get_edgearr_bytesize();
+// private:
+//     size_t rarr_bytesize;
+//     size_t earr_bytesize;
+//     int num_workers;
+//     CuWorker** workers;
+//     std::vector<std::thread> worker_threads;
+//     std::vector<bool> worker_status;
+// };
