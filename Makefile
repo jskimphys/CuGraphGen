@@ -6,12 +6,13 @@ opt_flags=-O3
 lib_flags=-lcuda -lcurand
 flags=$(sm_flags) $(opt_flags) $(lib_flags)
 
-all: main
+all: main test
 
 main: src/*.cu src/*.cpp
-	$(CC) $(flags) -o main src/*.cu src/*.cpp 
+	$(CC) $(flags) -o $@ $^
 
-test:
+test: util/*.cpp
+	g++ -O2 -o $@ $^
 
 
 clean:

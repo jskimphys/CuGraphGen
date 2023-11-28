@@ -3,6 +3,7 @@
 #include <cassert>
 #include <bitset>
 #include <filesystem>
+#include <iostream>
 
 #include "kernels.cuh"
 #include "SKGgenerator.cuh"
@@ -11,10 +12,11 @@ using namespace std;
 
 const int EDGE_BYTE = 16;
 
-int get_lsb_loc(uint64_t n);
-int get_msb_loc(uint64_t n);
+
 int count_bits(uint64_t n);
+int ilog2(uint64_t n);
 int64_t flunctuate(uint64_t n, double prob, mt19937& gen);
+int64_t get_2k_boundary(uint64_t vid);
 
 
 //schedule workloads by divide original workload
@@ -55,20 +57,23 @@ void SKGgenerator::divide_workloads(){
                         .dst_vid_end = dst_vid_end,
                         .num_edge = (uint64_t)round(n_edge * edge_prob),
                         .log_n = log_n,
-                        .log_prefixlen = get_lsb_loc(dst_vid_end - dst_vid_start)
+                        .log_prefixlen = log_n - ilog2(dst_vid_end - dst_vid_start)
                     };
                     
                     workloads.push_back(entry);
                     dst_vid_start = dst_vid_end;
-                    dst_vid_end = dst_vid_start +  1ULL << get_lsb_loc(dst_vid_start);
+                    dst_vid_end = get_2k_boundary(dst_vid_start);
+                    edge_prob = 123455477;
                 }
                 src_vid_start = src_vid_end;
-                src_vid_end = src_vid_start +  1ULL << get_lsb_loc(src_vid_start);
+                src_vid_end = get_2k_boundary(src_vid_start);
                 continue;
             }
-            src_vid_end = src_vid_end - (src_vid_end - src_vid_start) / 2;
-            edge_prob *= (a+b);
-            continue;
+            else{
+                src_vid_end = src_vid_end - (src_vid_end - src_vid_start) / 2;  
+                edge_prob *= (a+b); 
+                continue;
+            }
         }
 
         schedule_entry entry{
@@ -79,33 +84,13 @@ void SKGgenerator::divide_workloads(){
             .dst_vid_end = n_vertex,
             .num_edge = (uint64_t)round(n_edge * edge_prob),
             .log_n = log_n,
-            .log_prefixlen = get_lsb_loc(src_vid_end - src_vid_start)
+            .log_prefixlen = log_n - ilog2(src_vid_end - src_vid_start)
         };
         
         workloads.push_back(entry);
-        if(get_lsb_loc(src_vid_start) > get_lsb_loc(src_vid_end)){
-            //ex) current
-            //src_vid_start = 001000
-            //src_vid_end   = 001010
-            src_vid_start = src_vid_end;
-            src_vid_end = src_vid_end + (src_vid_end - src_vid_start);
-            edge_prob *= (c+d)/(a+b);
-        }else{
-            //ex) current
-            //src_vid_start = 00111110
-            //src_vid_end   = 01000000
-            src_vid_start = src_vid_end;
-            src_vid_end = src_vid_end + (src_vid_end - src_vid_start);
-            edge_prob *= (a+b)/(c+d);
-            //current state
-            //src_vid_start = 01000000
-            //src_vid_end   = 01000010
-            while(get_lsb_loc(src_vid_start) > get_lsb_loc(src_vid_end)){
-                src_vid_start = src_vid_end;
-                src_vid_end = src_vid_end + (src_vid_end - src_vid_start);
-                edge_prob /= (c+d);
-            }
-        }
+        src_vid_start = src_vid_end;
+        src_vid_end = get_2k_boundary(src_vid_start);
+        edge_prob = 1234326576;
     }
 
     //since probability is not exactly the same as the number of edges
@@ -117,8 +102,51 @@ void SKGgenerator::divide_workloads(){
 
     for(int i = 0; i < wksize; i++){
         schedule_entry& entry = workloads[i];
-        entry.num_edge = max(0L, flunctuate(n_edge, (double) entry.num_edge / (double) n_edge, gen));
+        entry.num_edge = max(0L, flunctuate(n_edge, (double) entry.num_edge / (double) n_edge, gen));//although max function will never happen...
     }
+    return;
+}
+
+void SKGgenerator::divide_workloads_naive(){
+    if(a+b < c+d){//this part is just to make workload division more straightforward
+        std::swap(a, c);
+        std::swap(b, d);
+    }
+    // assert(a+c >= b+d);
+
+    uint64_t max_edge_per_workload = (uint64_t)(workload_byte_limit / EDGE_BYTE * 0.85);
+    
+    uint64_t num_workloads = n_edge / max_edge_per_workload + 1;
+    uint64_t last_workload_size = n_edge % max_edge_per_workload;
+    for(int i=0; i<num_workloads; i++){
+        if(i == num_workloads - 1){
+            workloads.push_back(schedule_entry{
+                .t = schedule_entry::type::along_src_vid,
+                .src_vid_start = 0,
+                .src_vid_end = n_vertex,
+                .dst_vid_start = 0,
+                .dst_vid_end = n_vertex,
+                .num_edge = last_workload_size,
+                .log_n = log_n,
+                .log_prefixlen = 0
+            });
+            break;
+        }else{        
+            workloads.push_back(schedule_entry{
+                .t = schedule_entry::type::along_src_vid,
+                .src_vid_start = 0,
+                .src_vid_end = n_vertex,
+                .dst_vid_start = 0,
+                .dst_vid_end = n_vertex,
+                .num_edge = max_edge_per_workload,
+                .log_n = log_n,
+                .log_prefixlen = 0
+            });
+        }
+    }
+
+    //since probability is not exactly the same as the number of edges
+    //we flunctuate the number of edges in each workload
     return;
 }
 
@@ -181,46 +209,52 @@ void SKGgenerator::generate(){
     //get memory and start to process each workload
 
     for(auto& file_info : file_infos){
-        cuworker.process_workloads(file_info.mappings, dir + "/edgelist8B_" + to_string(file_info.file_id) + ".part", file_info.size, a, b, c, d);
+        //format id to 00x format
+        string file_id_str = to_string(file_info.file_id);
+        while(file_id_str.size() < 3){
+            file_id_str = "0" + file_id_str;
+        }
+        cuworker.process_workloads(file_info.mappings, dir + "/edgelist8B_" + file_id_str + ".part", file_info.size, a, b, c, d);
     }
+    FILE *fp = fopen((dir + "/file_info.json").c_str(), "wb");
+    stringstream ss;
+    //json format info
+    ss << "{\n";
+    ss << "\t\"n_file\" : " << file_infos.size() << ",\n";
+    ss << "\t\"n_vertex\" : " << n_vertex << ",\n";
+    ss << "\t\"n_edge\" : " << n_edge << ",\n";
+    ss << "\t\"a\" : " << a << ",\n";
+    ss << "\t\"b\" : " << b << ",\n";
+    ss << "\t\"c\" : " << c << ",\n";
+    ss << "\t\"d\" : " << d << "\n";
+    ss << "}";
+    fwrite(ss.str().c_str(), 1, ss.str().size(), fp);
+
 }
 
-uint64_t SKGgenerator::workload_size_calc_src_dim(int log_n, uint64_t src_vid_start, uint64_t src_vid_end){
-    int log_postfix = get_lsb_loc(src_vid_end - src_vid_start);
-    int bitcount = count_bits(src_vid_start >> log_postfix);
-    double prob = pow(c+d, bitcount) * pow(a+b, log_n - log_postfix - bitcount);
-    //assert(prob <= 1);
-    uint64_t num_edge_in_workload =  static_cast<uint64_t>(round(n_edge * prob));
-    return num_edge_in_workload;
-}
-
-uint64_t SKGgenerator::workload_size_calc_dst_dim(int log_n, uint64_t dst_vid_start, uint64_t dst_vid_end, uint64_t num_edge_in_src_dim){
-    int log_postfix = get_lsb_loc(dst_vid_end - dst_vid_start);
-    int bitcount = count_bits(dst_vid_start >> log_postfix);
-    double prob = pow(b+d, bitcount) * pow(a+c, log_n - log_postfix - bitcount);
-    uint64_t num_edge_in_workload =  static_cast<uint64_t>(round(num_edge_in_src_dim * prob));
-    return num_edge_in_workload;
-}
-
-int get_lsb_loc(uint64_t n){
+int ilog2(uint64_t n){
     if(n == 0){
-        return 64;
+        std::cout << "ilog2(0) is undefined" << std::endl;
+        exit(1); 
     }
-    int count = -1;
+    int ret = -1;
     while(n){
-        count++;
-        n >>= 1;
+        ret++;
+        n = n >> 1;
     }
-    return count;
+    assert(n == 0);
+    return ret;
 }
-int get_msb_loc(uint64_t n){
-    int count = 0;
-    while(n){
-        count++;
-        n >>= 1;
+
+int64_t get_2k_boundary(uint64_t vid){
+    int64_t trailing_zero = 0;
+    while(vid & 1 == 0){
+        trailing_zero++;
+        vid >>= 1;
     }
-    return count;
+    return vid + (1ULL << trailing_zero);
 }
+
 
 int count_bits(uint64_t n){
     if (n == 0){

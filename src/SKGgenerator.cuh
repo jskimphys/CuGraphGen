@@ -43,6 +43,7 @@ public:
     }
     void generate();
     void divide_workloads(); //generates workload by devide original workload
+    void divide_workloads_naive();
     void print_workload_summary(){
         std::cout << "-----workload generation summary-----" << std::endl;
         std::cout << "number of workloads: " << workloads.size() << std::endl;

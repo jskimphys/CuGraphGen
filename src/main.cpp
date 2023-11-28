@@ -71,7 +71,7 @@ int main(int argc, char** argv) {
     //generate graphs
     SKGgenerator generator(a, b, c, d, scale, edgeratio, seed, dir, workload_byte_limit);
     auto start = std::chrono::high_resolution_clock::now();
-    generator.divide_workloads();
+    generator.divide_workloads_naive();
     auto end = std::chrono::high_resolution_clock::now();
     std::cout << "Time to generate divide_workloads: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms" << std::endl;
     generator.print_workload_summary();

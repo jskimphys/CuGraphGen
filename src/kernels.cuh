@@ -35,19 +35,3 @@ private:
     std::vector<uint64_t*> edge_arr_host_list;
     fast_writer writer;
 };
-
-// class CuScheduler{
-// public:
-//     CuScheduler(int num_workers);
-//     ~CuScheduler();
-//     void deliver_workloads(std::vector<schedule_entry> workloads, std::string filename, size_t filesize, double a, double b, double c, double d);
-//     size_t get_randomarr_bytesize();
-//     size_t get_edgearr_bytesize();
-// private:
-//     size_t rarr_bytesize;
-//     size_t earr_bytesize;
-//     int num_workers;
-//     CuWorker** workers;
-//     std::vector<std::thread> worker_threads;
-//     std::vector<bool> worker_status;
-// };

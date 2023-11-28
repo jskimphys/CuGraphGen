@@ -17,7 +17,7 @@ __global__ void generate_randombits_dst(uint64_t prefix, uint16_t bab, uint16_t 
     if(tid >= num_edges) return;
 
     uint64_t rarr_idx = tid * num_bits;
-    while(num_bits > 0) {
+    while(num_bits-- > 0) {
         if(output_array[2*tid] & (1 << num_bits)){//if the corresponding src_vid bit is 1
             if(random_array[rarr_idx++] < dcd){
                 prefix = prefix | (1 << num_bits);
@@ -28,7 +28,6 @@ __global__ void generate_randombits_dst(uint64_t prefix, uint16_t bab, uint16_t 
                 prefix = prefix | (1 << num_bits);
             }
         }
-        num_bits--;
     }
     output_array[2*tid+1] = prefix;
 }
@@ -40,7 +39,7 @@ __global__ void generate_randombits_src(uint64_t prefix, uint16_t cdabcd, int nu
     if(tid >= num_edges) return;
 
     uint64_t rarr_idx = tid * num_bits;
-    while(num_bits-- > 0) {
+    while(num_bits-- >= 0) {
         if(random_array[rarr_idx++] < cdabcd){
             prefix = prefix | (1 << num_bits);
         }
@@ -210,68 +209,3 @@ void CuWorker::process_workloads(std::vector<schedule_entry> workloads, std::str
     writer.write_async(filename, (char*) edge_arr_host_list[hostMemIdx], total_edges * 16);
     hostMemIdx = (hostMemIdx + 1) % edge_arr_host_list.size();
 }
-
-// CuScheduler::CuScheduler(int num_workers){
-//     //get cuda device properties
-//     size_t free_mem_size, total_mem_size;
-//     cudaMemGetInfo(&free_mem_size, &total_mem_size);
-    
-//     //allocate memory for each worker
-//     size_t mem_per_worker = (size_t) (free_mem_size * 0.85 / num_workers);
-//     double rarr_earr_ratio = 4;
-
-//     earr_bytesize = mem_per_worker / (rarr_earr_ratio + 1);
-//     rarr_bytesize = mem_per_worker - earr_bytesize;
-
-//     this->num_workers = num_workers;
-//     workers = new CuWorker*[num_workers];
-//     for(int i = 0; i < num_workers; i++){
-//         worker_status.push_back(false);
-//         worker_threads.push_back(thread());
-//         workers[i] = new CuWorker(i, rarr_bytesize, earr_bytesize, NUM_WRITER);
-//     }
-// }
-
-// CuScheduler::~CuScheduler(){
-//     //free memory for each worker
-//     for(int i = 0; i < num_workers; i++){
-//         worker_threads[i].join();
-//     }
-//     for(int i = 0; i < num_workers; i++){
-//         delete workers[i];
-//     }
-// }
-
-// void CuScheduler::deliver_workloads(std::vector<schedule_entry> workloads, std::string filename, size_t filesize, double a, double b, double c, double d){
-//     //divide workloads to each worker
-//     int idle_worker = -1;
-//     for(int i=0; i < num_workers; i++){
-//         if(worker_status[i] == false){
-//             idle_worker = i;
-//             break;
-//         }
-//     }
-//     if(idle_worker == -1){
-//         while(true){//spin wait for idle worker
-//             for(int i=0; i<num_workers; i++){
-//                 if(worker_threads[i].joinable()){
-//                     worker_threads[i].join();
-//                     worker_status[i] = false;
-//                     idle_worker = i;
-//                     break;
-//                 }
-//             }
-//             if(idle_worker != -1) break;
-//         }
-//     }
-
-//     worker_threads[idle_worker] = thread(&CuWorker::process_workloads, workers[idle_worker], workloads, filename, filesize, a, b, c, d);
-//     worker_status[idle_worker] = true;
-// }
-
-// size_t CuScheduler::get_randomarr_bytesize(){
-//     return rarr_bytesize;
-// }
-// size_t CuScheduler::get_edgearr_bytesize(){
-//     return earr_bytesize;
-// }
