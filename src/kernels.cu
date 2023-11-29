@@ -140,7 +140,7 @@ void CuWorker::process_workloads(std::vector<schedule_entry> workloads, std::str
         }
         total_edges += entry.num_edge;
     }
-    update_random_arr(total_rbits / 2);//require 2 bytes of random value to generate one random bit in edge
+    update_random_arr(rarr_bytesize/4);//require 2 bytes of random value to generate one random bit in edge
 
     // maps memory for each workload
     uint64_t** edge_ptrs = new uint64_t*[workloads.size()];
@@ -149,24 +149,24 @@ void CuWorker::process_workloads(std::vector<schedule_entry> workloads, std::str
     randombits_ptrs[0] = (uint16_t*)random_arr;
     for(int i = 1; i < workloads.size(); i++){
         edge_ptrs[i] = edge_ptrs[i-1] + workloads[i-1].num_edge * 2;
-        edge_ptrs[i] = edge_ptrs[i] + 16 - workloads[i-1].num_edge % 16;//align to 16 byest
+        edge_ptrs[i] = edge_ptrs[i] + 16 - workloads[i-1].num_edge % 16;//align to 16 byte
 
         size_t randombits_needed = 0;
         if(workloads[i].t == schedule_entry::type::along_src_vid){
             //need to generate random bits for src_vid
             randombits_needed = workloads[i-1].num_edge * (workloads[i-1].log_n - workloads[i-1].log_prefixlen);
             randombits_ptrs[i] = randombits_ptrs[i-1] + randombits_needed;
-            randombits_ptrs[i] = randombits_ptrs[i] + 16 - randombits_needed % 16;//align to 16 byest
+            randombits_ptrs[i] = randombits_ptrs[i] + 16 - randombits_needed % 16;//align to 16 byte
             
             //need to generate random bits for dst_vid
             randombits_needed = workloads[i-1].num_edge * workloads[i-1].log_n;
             randombits_ptrs[i] = randombits_ptrs[i] + randombits_needed;
-            randombits_ptrs[i] = randombits_ptrs[i] + 16 - randombits_needed % 16;//align to 16 byest
+            randombits_ptrs[i] = randombits_ptrs[i] + 16 - randombits_needed % 16;//align to 16 byte
         }
         else{
             randombits_needed = workloads[i-1].num_edge * (workloads[i-1].log_n - workloads[i-1].log_prefixlen);
             randombits_ptrs[i] = randombits_ptrs[i-1] + randombits_needed;
-            randombits_ptrs[i] = randombits_ptrs[i] + 16 - randombits_needed % 16;//align to 16 byest
+            randombits_ptrs[i] = randombits_ptrs[i] + 16 - randombits_needed % 16;//align to 16 byte
         }
     }
 
@@ -192,8 +192,8 @@ void CuWorker::process_workloads(std::vector<schedule_entry> workloads, std::str
             uint16_t bab = (uint16_t) (b/(a+b) * (1 << 16));
             uint16_t dcd = (uint16_t) (d/(c+d) * (1 << 16));
             int randombits_used = entry.num_edge * (entry.log_n - entry.log_prefixlen);
-            randombits_used = randombits_used + 16 - randombits_used % 16;//align to 16 byest
-            generate_randombits_dst<<<gridSize, blockSize, 0, streams[i % streams.size()]>>>(entry.dst_vid_start, bab, dcd, entry.log_n, (uint16_t*)(randombits_ptrs[i] + randombits_used), (uint64_t*)edge_ptrs[i], entry.num_edge);
+            randombits_used = randombits_used + 16 - randombits_used % 16;//align to 16 byte
+            generate_randombits_dst<<<gridSize, blockSize, 0, streams[i % streams.size()]>>>(entry.dst_vid_start, bab, dcd, entry.log_n, (uint16_t*)(randombits_ptrs[i]) + randombits_used, (uint64_t*)edge_ptrs[i], entry.num_edge);
         }
     }
 
