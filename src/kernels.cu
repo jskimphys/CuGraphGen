@@ -6,11 +6,12 @@
 #include <thread>
 
 #include "kernels.cuh"
+#include "constants.h"
 
-const int blockSize = 128;
+const int blockSize = 256;
 const int STREAM_PER_WORKER = 16;
 
-__global__ void generate_randombits_dst(uint64_t prefix, uint16_t bab, uint16_t dcd, int num_bits, uint16_t* random_array, uint64_t* output_array, uint64_t num_edges) {
+__global__ void generate_randombits_dst(vid_t prefix, uint16_t bab, uint16_t dcd, int num_bits, uint16_t* random_array, vid_t* output_array, uint64_t num_edges) {
     //inputs : after the bits in prefix, posterier bits are randomly generated
     //one_prob : probability of 1
     uint64_t tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -32,7 +33,7 @@ __global__ void generate_randombits_dst(uint64_t prefix, uint16_t bab, uint16_t 
     output_array[2*tid+1] = prefix;
 }
 
-__global__ void generate_randombits_src(uint64_t prefix, uint16_t cdabcd, int num_bits, uint16_t* random_array, uint64_t* output_array, uint64_t num_edges) {
+__global__ void generate_randombits_src(uint64_t prefix, uint16_t cdabcd, int num_bits, uint16_t* random_array, vid_t* output_array, uint64_t num_edges) {
     //inputs : after the bits in prefix, posterier bits are randomly generated
     //cdabcd : probability of 1
     uint64_t tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -47,7 +48,7 @@ __global__ void generate_randombits_src(uint64_t prefix, uint16_t cdabcd, int nu
     output_array[2*tid] = prefix;
 }
 
-__global__ void fillWithStride2(uint64_t* data, uint64_t value, int size) {
+__global__ void fillWithStride2(vid_t* data, vid_t value, int size) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (tid < size) {
@@ -63,7 +64,7 @@ CuWorker::CuWorker(uint64_t seed)
     
     //allocate memory for each worker
     size_t mem_per_worker = (size_t) (free_mem_size * 0.85);
-    double rarr_earr_ratio = 4;
+    double rarr_earr_ratio = 6;
 
     const int host_mem_num = 2;//this is for writing parallelism
     earr_bytesize = mem_per_worker / (rarr_earr_ratio + 1);
@@ -79,7 +80,7 @@ CuWorker::CuWorker(uint64_t seed)
     cudaMallocAsync((void**)&edge_arr_device,  earr_bytesize + 8*1024, streams[1]);
     
     
-    edge_arr_host_list = std::vector<uint64_t*>(host_mem_num);
+    edge_arr_host_list = std::vector<vid_t*>(host_mem_num);
     for(int i=0; i< host_mem_num; i++){
         cudaMallocHost((void**)&(edge_arr_host_list[i]), earr_bytesize);
         if(cudaPeekAtLastError() != cudaSuccess){
@@ -143,13 +144,13 @@ void CuWorker::process_workloads(std::vector<schedule_entry> workloads, std::str
     update_random_arr(rarr_bytesize/4);//require 2 bytes of random value to generate one random bit in edge
 
     // maps memory for each workload
-    uint64_t** edge_ptrs = new uint64_t*[workloads.size()];
+    vid_t** edge_ptrs = new vid_t*[workloads.size()];
     uint16_t** randombits_ptrs = new uint16_t*[workloads.size()];
-    edge_ptrs[0] = (uint64_t*)edge_arr_device;
+    edge_ptrs[0] = (vid_t*)edge_arr_device;
     randombits_ptrs[0] = (uint16_t*)random_arr;
     for(int i = 1; i < workloads.size(); i++){
         edge_ptrs[i] = edge_ptrs[i-1] + workloads[i-1].num_edge * 2;
-        edge_ptrs[i] = edge_ptrs[i] + 16 - workloads[i-1].num_edge % 16;//align to 16 byte
+        edge_ptrs[i] = edge_ptrs[i] + 16 - (workloads[i-1].num_edge*2) % 16;//align to 16 byte
 
         size_t randombits_needed = 0;
         if(workloads[i].t == schedule_entry::type::along_src_vid){
@@ -176,24 +177,24 @@ void CuWorker::process_workloads(std::vector<schedule_entry> workloads, std::str
         schedule_entry& entry = workloads[i];
         if(entry.t == schedule_entry::type::along_dst_vid){
             //fill the src_vid in the edgelist
-            int gridSize = (entry.num_edge + blockSize - 1) / blockSize;
-            uint16_t bab = (uint16_t) (b/(a+b) * (1 << 16));
-            uint16_t dcd = (uint16_t) (d/(c+d) * (1 << 16));
+            uint64_t gridSize = (entry.num_edge + blockSize - 1) / blockSize;
+            uint16_t bab = (uint16_t) round(b/(a+b) * (1 << 16) - 0.5);//-0.5 is here, becuase prob is distibuted from 0 to 2^16 but random uint16 is distributed from 0 to 2^16-1
+            uint16_t dcd = (uint16_t) round(d/(c+d) * (1 << 16) - 0.5);
 
-            fillWithStride2<<<gridSize, blockSize, 0, streams[i % streams.size()]>>>((uint64_t*)edge_ptrs[i], entry.src_vid_start, entry.num_edge);
+            fillWithStride2<<<gridSize, blockSize, 0, streams[i % streams.size()]>>>(edge_ptrs[i], entry.src_vid_start, entry.num_edge);
             generate_randombits_dst<<<gridSize, blockSize, 0, streams[i % streams.size()]>>>(entry.dst_vid_start, bab, dcd, entry.log_n - entry.log_prefixlen, randombits_ptrs[i], edge_ptrs[i], entry.num_edge);
         }
         else{
-            int gridSize = (entry.num_edge + blockSize - 1) / blockSize;
-            uint16_t cdabcd = (uint16_t) ((c+d) * (1 << 16));
+            uint64_t gridSize = (entry.num_edge + blockSize - 1) / blockSize;
+            uint16_t cdabcd = (uint16_t) round((c+d) * (1 << 16) - 0.5);
             generate_randombits_src<<<gridSize, blockSize, 0, streams[i % streams.size()]>>>(entry.src_vid_start, cdabcd, entry.log_n - entry.log_prefixlen, randombits_ptrs[i], edge_ptrs[i], entry.num_edge);
 
             
-            uint16_t bab = (uint16_t) (b/(a+b) * (1 << 16));
-            uint16_t dcd = (uint16_t) (d/(c+d) * (1 << 16));
+            uint16_t bab = (uint16_t) round(b/(a+b) * (1 << 16) - 0.5);
+            uint16_t dcd = (uint16_t) round(d/(c+d) * (1 << 16) - 0.5);
             int randombits_used = entry.num_edge * (entry.log_n - entry.log_prefixlen);
             randombits_used = randombits_used + 16 - randombits_used % 16;//align to 16 byte
-            generate_randombits_dst<<<gridSize, blockSize, 0, streams[i % streams.size()]>>>(entry.dst_vid_start, bab, dcd, entry.log_n, (uint16_t*)(randombits_ptrs[i]) + randombits_used, (uint64_t*)edge_ptrs[i], entry.num_edge);
+            generate_randombits_dst<<<gridSize, blockSize, 0, streams[i % streams.size()]>>>(entry.dst_vid_start, bab, dcd, entry.log_n, (uint16_t*)(randombits_ptrs[i]) + randombits_used, edge_ptrs[i], entry.num_edge);
         }
     }
 
@@ -205,7 +206,8 @@ void CuWorker::process_workloads(std::vector<schedule_entry> workloads, std::str
     }
 
     CUdeviceptr dvptr = CUdeviceptr(edge_arr_device);
-    cuMemcpyDtoH(edge_arr_host_list[hostMemIdx], dvptr, total_edges * 16);
-    writer.write_async(filename, (char*) edge_arr_host_list[hostMemIdx], total_edges * 16);
+
+    cuMemcpyDtoH(edge_arr_host_list[hostMemIdx], dvptr, total_edges * EDGE_BYTE);
+    writer.write_async(filename, (char*) edge_arr_host_list[hostMemIdx], total_edges * EDGE_BYTE);
     hostMemIdx = (hostMemIdx + 1) % edge_arr_host_list.size();
 }

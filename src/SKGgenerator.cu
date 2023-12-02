@@ -5,12 +5,11 @@
 #include <filesystem>
 #include <iostream>
 
+#include "constants.h"
 #include "kernels.cuh"
 #include "SKGgenerator.cuh"
 
 using namespace std;
-
-const int EDGE_BYTE = 16;
 
 
 int count_bits(uint64_t n);
@@ -30,8 +29,8 @@ void SKGgenerator::divide_workloads(){
     }
     // assert(a+c >= b+d);
 
-    uint64_t src_vid_start = 0;
-    uint64_t src_vid_end = n_vertex;
+    vid_t src_vid_start = 0;
+    vid_t src_vid_end = n_vertex;
     uint64_t max_edge_per_workload = (uint64_t)(workload_byte_limit / EDGE_BYTE * 0.85);
     double edge_prob = 1;
     
@@ -40,8 +39,8 @@ void SKGgenerator::divide_workloads(){
             if(src_vid_end - src_vid_start == 1){
                 //if src vid is all divided, but desirable size is not reached
                 //now divide in dst_vid dimension
-                uint64_t dst_vid_start = 0;
-                uint64_t dst_vid_end = n_vertex;
+                vid_t dst_vid_start = 0;
+                vid_t dst_vid_end = n_vertex;
                 while(dst_vid_start < n_vertex){
                     if (n_edge * edge_prob > max_edge_per_workload){
                         dst_vid_end = dst_vid_end - (dst_vid_end - dst_vid_start) / 2;
@@ -120,6 +119,9 @@ void SKGgenerator::divide_workloads_naive(){
     uint64_t last_workload_size = n_edge % max_edge_per_workload;
     for(int i=0; i<num_workloads; i++){
         if(i == num_workloads - 1){
+            if(last_workload_size == 0){
+                break;
+            }
             workloads.push_back(schedule_entry{
                 .t = schedule_entry::type::along_src_vid,
                 .src_vid_start = 0,
@@ -157,7 +159,7 @@ void SKGgenerator::generate(){
     }
     filesystem::create_directory(dir);
     
-    if(filesystem::space(dir).available < n_edge * 18){
+    if(filesystem::space(dir).available < n_edge * (EDGE_BYTE + 1)){
         std::cout << "available storage : " << filesystem::space(dir).available << std::endl;
         std::cout << "required storage  : " << n_edge * 18 << std::endl;
         std::cout << "Not enough storage, exiting" << std::endl;
@@ -191,16 +193,16 @@ void SKGgenerator::generate(){
             entry_random_arr_size = entry.num_edge * (entry.log_n - entry.log_prefixlen) * 2;
         }
 
-        if(infile_address + entry.num_edge * 16 > earr_bytesize || needed_random_arr_size + entry_random_arr_size > rarr_bytesize){
+        if(infile_address + entry.num_edge * EDGE_BYTE > earr_bytesize || needed_random_arr_size + entry_random_arr_size > rarr_bytesize){
             file_infos[file_id].size = infile_address;
-            infile_address = entry.num_edge * 16;
+            infile_address = entry.num_edge * EDGE_BYTE;
             needed_random_arr_size = entry_random_arr_size;
 
             file_id++;
             file_infos.push_back(file_info{file_id, 0});
         }
         file_infos[file_id].mappings.push_back(entry);
-        infile_address += entry.num_edge * 16;
+        infile_address += entry.num_edge * EDGE_BYTE;
         needed_random_arr_size += entry_random_arr_size;
     }
     

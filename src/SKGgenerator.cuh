@@ -4,6 +4,7 @@
 #include <vector>
 #include <iostream>
 #include <bitset>
+#include "constants.h"
 
 struct schedule_entry {
     enum class type{
@@ -11,10 +12,10 @@ struct schedule_entry {
         along_dst_vid,
     };
     type t;
-    uint64_t src_vid_start;
-    uint64_t src_vid_end;
-    uint64_t dst_vid_start;
-    uint64_t dst_vid_end;
+    vid_t src_vid_start;
+    vid_t src_vid_end;
+    vid_t dst_vid_start;
+    vid_t dst_vid_end;
     uint64_t num_edge;
     int log_n;
     int log_prefixlen;
@@ -35,8 +36,8 @@ public:
         d /= norm;
 
         n_vertex = (1ULL << log_n);
-        n_edge = n_vertex * edge_ratio;
-        if (n_edge > n_vertex * n_vertex){
+        n_edge = (uint64_t)n_vertex * edge_ratio;
+        if (n_edge / n_vertex >  n_vertex){
             std::cout << "This algorithm only works well for spase graph. since Each edge is generated in independently, |E|~|V|^2 case will give many overlapping edges" << std::endl;
             exit(0);
         }
@@ -59,15 +60,12 @@ public:
         n_edge = total_edge;//this might be different from the original n_edge since we flunctuate the number of edges in each workload
     }
 private:
-    uint64_t workload_size_calc_src_dim(int log_n, uint64_t src_vid_start, uint64_t src_vid_end);
-    uint64_t workload_size_calc_dst_dim(int log_n, uint64_t dst_vid_start, uint64_t dst_vid_end, uint64_t num_edge_in_src_dim);
-private:
     double a;
     double b;
     double c;
     double d;
     int log_n;
-    uint64_t n_vertex;
+    vid_t n_vertex;
     uint64_t n_edge;
 
     std::string dir;

@@ -9,6 +9,7 @@
 
 #include "SKGgenerator.cuh"
 #include "fast_writer.h"
+#include "constants.h"
 
 class CuWorker{
 public:
@@ -27,11 +28,11 @@ private:
     size_t rarr_bytesize;
     size_t earr_bytesize;
     uint32_t* random_arr;
-    uint64_t* edge_arr_device;
+    vid_t* edge_arr_device;
     curandGenerator_t gen;
     std::vector<cudaStream_t> streams;
 
     int hostMemIdx;
-    std::vector<uint64_t*> edge_arr_host_list;
+    std::vector<vid_t*> edge_arr_host_list;
     fast_writer writer;
 };

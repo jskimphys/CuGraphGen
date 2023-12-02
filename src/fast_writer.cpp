@@ -9,8 +9,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <algorithm>
 
 #include "fast_writer.h"
+#include "constants.h"
 
 using namespace std;
 

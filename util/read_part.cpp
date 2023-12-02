@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <cstdio>
+#include <algorithm>
 
 using namespace std;
 
@@ -69,8 +70,7 @@ int main(){
     }
     cout << n_file << "\t" << n_vertex << "\t" << n_edge << "\t" << a << "\t" << b << "\t" << c << "\t" << d << endl;
 
-    vector<uint32_t> out_deg(n_vertex, 0);
-    vector<uint32_t> in_deg(n_vertex, 0);
+    vector<vector<uint32_t>> graph(n_vertex);
 
     for(int i=0; i<n_file; i++){
         string file_idx = to_string(i);
@@ -90,21 +90,46 @@ int main(){
             exit(0);
         }
 
-        uint64_t* mem = (uint64_t*)mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0);
+        uint32_t* mem = (uint32_t*)mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0);
         if(mem == MAP_FAILED){
             std::cout << "mmap failed" << std::endl;
             exit(0);
         }
 
-        uint64_t* mem64 = (uint64_t*)mem;
-        for(int i=0; i<sb.st_size/16; i++){
-            out_deg[mem64[2*i]]++;
-            in_deg[mem64[2*i+1]]++;
+        for(int i=0; i<sb.st_size/8; i++){
+            graph[mem[i*2]].push_back(mem[i*2+1]);
         }
         cout << "finish file " << i << endl;
         munmap(mem, sb.st_size);
         close(fd);
     }
+
+    // delete duplicate
+    for(int i=0; i<n_vertex; i++){
+        sort(graph[i].begin(), graph[i].end());
+    }
+    //delete duplicatation
+    vector<vector<uint32_t>> graph2(n_vertex);
+    for(int i=0; i<n_vertex; i++){
+        for(int j=0; j<graph[i].size(); j++){
+            if(j == 0 || graph[i][j] != graph[i][j-1]){
+                graph2[i].push_back(graph[i][j]);
+            }
+        }
+    }
+    graph = graph2;
+
+    auto out_deg = vector<uint32_t>(n_vertex);
+    auto in_deg = vector<uint32_t>(n_vertex);
+
+    for(int i=0; i<n_vertex; i++){
+        for(int j=0; j<graph[i].size(); j++){
+            out_deg[i]++;
+            in_deg[graph[i][j]]++;
+        }
+    }
+
+
 
     string deg_file_path = "out/deg.txt";
     FILE *deg_file = fopen(deg_file_path.c_str(), "w");
